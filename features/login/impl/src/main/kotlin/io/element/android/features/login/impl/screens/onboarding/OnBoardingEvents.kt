@@ -15,4 +15,22 @@ sealed interface OnBoardingEvents {
 
     data object OnVersionClick : OnBoardingEvents
     data object ClearError : OnBoardingEvents
+
+    /** Update the Matrix ID text (without @ prefix). */
+    data class SetMatrixId(val matrixId: String) : OnBoardingEvents
+
+    /** Update the password text. */
+    data class SetPassword(val password: String) : OnBoardingEvents
+
+    /** Discover the server from the entered Matrix ID and sign in. */
+    data object DiscoverAndSignIn : OnBoardingEvents
+
+    /** Submit password login after the password field has been revealed. */
+    data object SubmitPassword : OnBoardingEvents
+
+    /** Clear the direct login error. */
+    data object ClearLoginError : OnBoardingEvents
+
+    /** Clear pending OIDC details after navigation has been triggered. */
+    data object ClearPendingOidcDetails : OnBoardingEvents
 }

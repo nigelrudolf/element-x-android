@@ -9,6 +9,7 @@
 package io.element.android.features.login.impl.screens.onboarding
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -83,28 +84,28 @@ class OnboardingViewTest {
     }
 
     @Test
-    fun `when can login with QR code - clicking on sign in manually calls the expected callback - can search account provider`() {
-        `when can login with QR code - clicking on sign in manually calls the expected callback`(
-            mustChooseAccountProvider = false,
+    fun `when can login with QR code and can search account provider - sign in fields are shown`() {
+        val eventSink = EventsRecorder<OnBoardingEvents>(expectEvents = false)
+        rule.setOnboardingView(
+            state = anOnBoardingState(
+                canLoginWithQrCode = true,
+                mustChooseAccountProvider = false,
+                eventSink = eventSink,
+            ),
         )
+        // When mustChooseAccountProvider is false, Matrix ID sign-in fields are shown instead of "Sign in manually"
+        val label = rule.activity.getString(R.string.screen_login_form_header)
+        rule.onNodeWithText(label).assertIsDisplayed()
     }
 
     @Test
     fun `when can login with QR code - clicking on sign in manually calls the expected callback - cannot search account provider`() {
-        `when can login with QR code - clicking on sign in manually calls the expected callback`(
-            mustChooseAccountProvider = true,
-        )
-    }
-
-    private fun `when can login with QR code - clicking on sign in manually calls the expected callback`(
-        mustChooseAccountProvider: Boolean,
-    ) {
         val eventSink = EventsRecorder<OnBoardingEvents>(expectEvents = false)
-        ensureCalledOnceWithParam(mustChooseAccountProvider) { callback ->
+        ensureCalledOnceWithParam(true) { callback ->
             rule.setOnboardingView(
                 state = anOnBoardingState(
                     canLoginWithQrCode = true,
-                    mustChooseAccountProvider = mustChooseAccountProvider,
+                    mustChooseAccountProvider = true,
                     eventSink = eventSink,
                 ),
                 onSignIn = callback,
@@ -114,34 +115,35 @@ class OnboardingViewTest {
     }
 
     @Test
-    fun `when cannot login with QR code or create account - clicking on continue calls the sign in callback - can search account provider`() {
-        `when cannot login with QR code or create account - clicking on continue calls the sign in callback`(
-            mustChooseAccountProvider = false,
+    fun `when cannot login with QR code or create account and can search - sign in fields are shown`() {
+        val eventSink = EventsRecorder<OnBoardingEvents>(expectEvents = false)
+        rule.setOnboardingView(
+            state = anOnBoardingState(
+                canLoginWithQrCode = false,
+                canCreateAccount = false,
+                mustChooseAccountProvider = false,
+                eventSink = eventSink,
+            ),
         )
+        // When mustChooseAccountProvider is false, Matrix ID sign-in fields are shown
+        val label = rule.activity.getString(R.string.screen_login_form_header)
+        rule.onNodeWithText(label).assertIsDisplayed()
     }
 
     @Test
-    fun `when cannot login with QR code or create account - clicking on continue calls the sign in callback - cannot search account provider`() {
-        `when cannot login with QR code or create account - clicking on continue calls the sign in callback`(
-            mustChooseAccountProvider = true,
-        )
-    }
-
-    private fun `when cannot login with QR code or create account - clicking on continue calls the sign in callback`(
-        mustChooseAccountProvider: Boolean,
-    ) {
+    fun `when cannot login with QR code or create account - clicking on sign in manually calls the sign in callback - cannot search account provider`() {
         val eventSink = EventsRecorder<OnBoardingEvents>(expectEvents = false)
-        ensureCalledOnceWithParam(mustChooseAccountProvider) { callback ->
+        ensureCalledOnceWithParam(true) { callback ->
             rule.setOnboardingView(
                 state = anOnBoardingState(
                     canLoginWithQrCode = false,
                     canCreateAccount = false,
-                    mustChooseAccountProvider = mustChooseAccountProvider,
+                    mustChooseAccountProvider = true,
                     eventSink = eventSink,
                 ),
                 onSignIn = callback,
             )
-            rule.clickOn(CommonStrings.action_continue)
+            rule.clickOn(R.string.screen_onboarding_sign_in_manually)
         }
     }
 

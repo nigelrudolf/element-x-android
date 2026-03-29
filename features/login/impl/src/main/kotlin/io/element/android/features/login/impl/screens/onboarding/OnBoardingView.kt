@@ -16,8 +16,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -25,8 +31,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.CenterHorizontally
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
@@ -36,6 +47,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import io.element.android.compound.theme.ElementTheme
 import io.element.android.compound.tokens.generated.CompoundIcons
 import io.element.android.features.login.impl.R
+import io.element.android.features.login.impl.error.loginError
 import io.element.android.features.login.impl.login.LoginModeView
 import io.element.android.features.login.impl.screens.onboarding.classic.ConfirmingLoginWithElementClassic
 import io.element.android.features.login.impl.screens.onboarding.classic.LoginWithClassicEvent
@@ -49,12 +61,14 @@ import io.element.android.libraries.designsystem.atomic.pages.OnBoardingPage
 import io.element.android.libraries.designsystem.components.BigIcon
 import io.element.android.libraries.designsystem.components.async.AsyncActionView
 import io.element.android.libraries.designsystem.components.dialogs.ConfirmationDialog
+import io.element.android.libraries.designsystem.components.dialogs.ErrorDialog
 import io.element.android.libraries.designsystem.preview.ElementPreview
 import io.element.android.libraries.designsystem.preview.PreviewsDayNight
 import io.element.android.libraries.designsystem.theme.components.Button
 import io.element.android.libraries.designsystem.theme.components.IconSource
 import io.element.android.libraries.designsystem.theme.components.Text
 import io.element.android.libraries.designsystem.theme.components.TextButton
+import io.element.android.libraries.designsystem.theme.components.TextField
 import io.element.android.libraries.matrix.api.auth.OidcDetails
 import io.element.android.libraries.testtags.TestTags
 import io.element.android.libraries.testtags.testTag
@@ -79,6 +93,16 @@ fun OnBoardingView(
     onReportProblem: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Navigate to OIDC when details are ready from direct Matrix ID sign-in.
+    // LaunchedEffect keyed on the details ensures this fires only once.
+    val pendingOidc = state.pendingOidcDetails
+    if (pendingOidc != null) {
+        LaunchedEffect(pendingOidc) {
+            onOidcDetails(pendingOidc)
+            state.eventSink(OnBoardingEvents.ClearPendingOidcDetails)
+        }
+    }
+
     val loginView = @Composable {
         LoginModeView(
             loginMode = state.loginMode,
@@ -163,7 +187,7 @@ private fun AddFirstAccountScaffold(
     modifier: Modifier = Modifier,
 ) {
     OnBoardingPage(
-        modifier = modifier,
+        modifier = modifier.imePadding(),
         renderBackground = state.onBoardingLogoResId == null,
         content = {
             if (state.onBoardingLogoResId != null) {
@@ -176,7 +200,12 @@ private fun AddFirstAccountScaffold(
             loginView()
         },
         footer = {
-            buttons()
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier.verticalScroll(scrollState),
+            ) {
+                buttons()
+            }
         }
     )
 }
@@ -276,13 +305,15 @@ private fun OnBoardingButtons(
             state.loginMode is AsyncData.Loading
         }
     }
+    val focusManager = LocalFocusManager.current
 
     ButtonColumnMolecule {
-        val signInButtonStringRes = if (state.canLoginWithQrCode || state.canCreateAccount) {
-            R.string.screen_onboarding_sign_in_manually
-        } else {
-            CommonStrings.action_continue
+        val defaultAccountProvider = state.defaultAccountProvider
+        // Show Matrix ID sign-in fields when there is no forced account provider
+        if (defaultAccountProvider == null && !state.mustChooseAccountProvider) {
+            SignInFields(state = state, focusManager = focusManager)
         }
+
         if (state.loginWithClassicState.canLoginWithClassic) {
             Button(
                 text = "Sign in with Element Classic",
@@ -303,18 +334,18 @@ private fun OnBoardingButtons(
                 modifier = Modifier.fillMaxWidth()
             )
         }
-        val defaultAccountProvider = state.defaultAccountProvider
-        if (defaultAccountProvider == null) {
+        if (defaultAccountProvider == null && state.mustChooseAccountProvider) {
+            // User must choose from a predefined list — show the manual sign in button
             Button(
-                text = stringResource(id = signInButtonStringRes),
+                text = stringResource(id = R.string.screen_onboarding_sign_in_manually),
                 onClick = {
-                    onSignIn(state.mustChooseAccountProvider)
+                    onSignIn(true)
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag(TestTags.onBoardingSignIn)
             )
-        } else {
+        } else if (defaultAccountProvider != null) {
             Button(
                 text = stringResource(id = R.string.screen_onboarding_sign_in_to, defaultAccountProvider),
                 showProgress = isLoading,
@@ -336,7 +367,6 @@ private fun OnBoardingButtons(
         }
         if (state.isAddingAccount.not()) {
             if (state.canReportBug) {
-                // Add a report problem text button. Use a Text since we need a special theme here.
                 Text(
                     modifier = Modifier
                         .clickable(onClick = onReportProblem)
@@ -358,6 +388,102 @@ private fun OnBoardingButtons(
                 )
             }
         }
+    }
+
+    // Show login error dialog for direct password login
+    if (state.loginAction is AsyncData.Failure) {
+        ErrorDialog(
+            title = stringResource(id = CommonStrings.dialog_title_error),
+            content = stringResource(loginError(state.loginAction.error)),
+            onSubmit = {
+                state.eventSink(OnBoardingEvents.ClearLoginError)
+            },
+        )
+    }
+}
+
+@Composable
+private fun SignInFields(
+    state: OnBoardingState,
+    focusManager: androidx.compose.ui.focus.FocusManager,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        // Matrix ID field with @ prefix
+        TextField(
+            value = state.matrixId,
+            onValueChange = { state.eventSink(OnBoardingEvents.SetMatrixId(it)) },
+            label = stringResource(id = R.string.screen_login_form_header),
+            placeholder = "username:server.com",
+            leadingIcon = {
+                Text(
+                    text = "@",
+                    style = ElementTheme.typography.fontBodyLgRegular,
+                    color = ElementTheme.colors.textSecondary,
+                )
+            },
+            enabled = !state.isLoading,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Email,
+                imeAction = if (state.showPasswordField) ImeAction.Next else ImeAction.Go,
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                onGo = {
+                    if (state.canSignIn) {
+                        focusManager.clearFocus()
+                        state.eventSink(OnBoardingEvents.DiscoverAndSignIn)
+                    }
+                },
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        if (state.showPasswordField) {
+            Spacer(modifier = Modifier.height(12.dp))
+            TextField(
+                value = state.password,
+                onValueChange = { state.eventSink(OnBoardingEvents.SetPassword(it)) },
+                label = stringResource(id = CommonStrings.common_password),
+                placeholder = stringResource(id = CommonStrings.common_password),
+                enabled = !state.isLoading,
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Go,
+                ),
+                keyboardActions = KeyboardActions(
+                    onGo = {
+                        if (state.canSignIn) {
+                            focusManager.clearFocus()
+                            state.eventSink(OnBoardingEvents.SubmitPassword)
+                        }
+                    },
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            text = stringResource(id = CommonStrings.action_continue),
+            showProgress = state.isLoading,
+            onClick = {
+                focusManager.clearFocus()
+                if (state.showPasswordField) {
+                    state.eventSink(OnBoardingEvents.SubmitPassword)
+                } else {
+                    state.eventSink(OnBoardingEvents.DiscoverAndSignIn)
+                }
+            },
+            enabled = state.canSignIn || state.isLoading,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag(TestTags.onBoardingSignIn),
+        )
     }
 }
 

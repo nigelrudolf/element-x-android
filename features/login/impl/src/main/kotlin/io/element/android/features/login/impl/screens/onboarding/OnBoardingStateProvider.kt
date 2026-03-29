@@ -15,6 +15,8 @@ import io.element.android.features.login.impl.screens.onboarding.classic.LoginWi
 import io.element.android.features.login.impl.screens.onboarding.classic.aLoginWithClassicState
 import io.element.android.libraries.architecture.AsyncData
 import io.element.android.libraries.designsystem.R
+import io.element.android.libraries.matrix.api.auth.OidcDetails
+import io.element.android.libraries.matrix.api.core.SessionId
 
 open class OnBoardingStateProvider : PreviewParameterProvider<OnBoardingState> {
     override val values: Sequence<OnBoardingState>
@@ -30,6 +32,17 @@ open class OnBoardingStateProvider : PreviewParameterProvider<OnBoardingState> {
                 isAddingAccount = true,
                 canLoginWithQrCode = true,
                 canCreateAccount = true,
+            ),
+            // Matrix ID field with password revealed
+            anOnBoardingState(
+                matrixId = "user:example.com",
+                showPasswordField = true,
+                canLoginWithQrCode = true,
+            ),
+            // Matrix ID field while loading
+            anOnBoardingState(
+                matrixId = "user:example.com",
+                isLoading = true,
             ),
         )
 }
@@ -47,6 +60,12 @@ fun anOnBoardingState(
     customLogoResId: Int? = null,
     loginMode: AsyncData<LoginMode> = AsyncData.Uninitialized,
     loginWithClassicState: LoginWithClassicState = aLoginWithClassicState(),
+    matrixId: String = "",
+    password: String = "",
+    showPasswordField: Boolean = false,
+    isLoading: Boolean = false,
+    loginAction: AsyncData<SessionId> = AsyncData.Uninitialized,
+    pendingOidcDetails: OidcDetails? = null,
     eventSink: (OnBoardingEvents) -> Unit = {},
 ) = OnBoardingState(
     isAddingAccount = isAddingAccount,
@@ -60,5 +79,11 @@ fun anOnBoardingState(
     loginMode = loginMode,
     onBoardingLogoResId = customLogoResId,
     loginWithClassicState = loginWithClassicState,
+    matrixId = matrixId,
+    password = password,
+    showPasswordField = showPasswordField,
+    isLoading = isLoading,
+    loginAction = loginAction,
+    pendingOidcDetails = pendingOidcDetails,
     eventSink = eventSink,
 )

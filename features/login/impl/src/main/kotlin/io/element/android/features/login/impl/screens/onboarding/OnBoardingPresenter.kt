@@ -9,6 +9,7 @@
 package io.element.android.features.login.impl.screens.onboarding
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,11 +29,22 @@ import io.element.android.features.login.impl.accountprovider.AccountProviderDat
 import io.element.android.features.login.impl.login.LoginHelper
 import io.element.android.features.login.impl.screens.onboarding.classic.LoginWithClassicState
 import io.element.android.features.rageshake.api.RageshakeFeatureAvailability
+import io.element.android.libraries.architecture.AsyncData
 import io.element.android.libraries.architecture.Presenter
+import io.element.android.libraries.core.log.logger.LoggerTag
 import io.element.android.libraries.core.meta.BuildMeta
+import io.element.android.libraries.matrix.api.auth.MatrixAuthenticationService
+import io.element.android.libraries.matrix.api.auth.OidcDetails
+import io.element.android.libraries.matrix.api.auth.OidcPrompt
+import io.element.android.libraries.matrix.api.core.MatrixPatterns
+import io.element.android.libraries.matrix.api.core.SessionId
 import io.element.android.libraries.sessionstorage.api.SessionStore
 import io.element.android.libraries.ui.utils.MultipleTapToUnlock
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import timber.log.Timber
+
+private val loggerTag = LoggerTag("OnBoardingPresenter")
 
 @AssistedInject
 class OnBoardingPresenter(
@@ -42,6 +54,7 @@ class OnBoardingPresenter(
     private val defaultAccountProviderAccessControl: DefaultAccountProviderAccessControl,
     private val rageshakeFeatureAvailability: RageshakeFeatureAvailability,
     private val loginHelper: LoginHelper,
+    private val authenticationService: MatrixAuthenticationService,
     private val onBoardingLogoResIdProvider: OnBoardingLogoResIdProvider,
     private val sessionStore: SessionStore,
     private val accountProviderDataSource: AccountProviderDataSource,
@@ -103,6 +116,14 @@ class OnBoardingPresenter(
 
         val loginWithClassicState = loginWithClassicPresenter.present()
 
+        // State for Matrix ID direct sign-in flow
+        var matrixId by rememberSaveable { mutableStateOf("") }
+        var password by rememberSaveable { mutableStateOf("") }
+        var showPasswordField by rememberSaveable { mutableStateOf(false) }
+        var isDiscovering by remember { mutableStateOf(false) }
+        val loginAction: MutableState<AsyncData<SessionId>> = remember { mutableStateOf(AsyncData.Uninitialized) }
+        var pendingOidcDetails by remember { mutableStateOf<OidcDetails?>(null) }
+
         fun handleEvent(event: OnBoardingEvents) {
             when (event) {
                 is OnBoardingEvents.OnSignIn -> localCoroutineScope.launch {
@@ -122,6 +143,39 @@ class OnBoardingPresenter(
                         }
                     }
                 }
+                is OnBoardingEvents.SetMatrixId -> {
+                    matrixId = event.matrixId
+                    // Reset password field when user changes the Matrix ID after discovery
+                    if (showPasswordField) {
+                        showPasswordField = false
+                        password = ""
+                    }
+                }
+                is OnBoardingEvents.SetPassword -> {
+                    password = event.password
+                }
+                OnBoardingEvents.DiscoverAndSignIn -> {
+                    localCoroutineScope.discoverServerAndSignIn(
+                        matrixId = matrixId,
+                        onShowPasswordField = { showPasswordField = true },
+                        onIsDiscovering = { isDiscovering = it },
+                        onOidcDetails = { pendingOidcDetails = it },
+                    )
+                }
+                OnBoardingEvents.SubmitPassword -> {
+                    localCoroutineScope.loginWithPassword(
+                        matrixId = matrixId,
+                        password = password,
+                        loginAction = loginAction,
+                        onIsDiscovering = { isDiscovering = it },
+                    )
+                }
+                OnBoardingEvents.ClearLoginError -> {
+                    loginAction.value = AsyncData.Uninitialized
+                }
+                OnBoardingEvents.ClearPendingOidcDetails -> {
+                    pendingOidcDetails = null
+                }
             }
         }
 
@@ -137,7 +191,81 @@ class OnBoardingPresenter(
             version = buildMeta.versionName,
             onBoardingLogoResId = onBoardingLogoResId,
             loginWithClassicState = loginWithClassicState,
+            matrixId = matrixId,
+            password = password,
+            showPasswordField = showPasswordField,
+            isLoading = isDiscovering,
+            loginAction = loginAction.value,
+            pendingOidcDetails = pendingOidcDetails,
             eventSink = ::handleEvent,
         )
+    }
+
+    private fun CoroutineScope.discoverServerAndSignIn(
+        matrixId: String,
+        onShowPasswordField: () -> Unit,
+        onIsDiscovering: (Boolean) -> Unit,
+        onOidcDetails: (OidcDetails) -> Unit,
+    ) = launch {
+        val fullMatrixId = "@$matrixId"
+
+        if (!MatrixPatterns.isUserId(fullMatrixId)) {
+            Timber.tag(loggerTag.value).w("Invalid Matrix ID: $fullMatrixId")
+            loginHelper.clearError()
+            return@launch
+        }
+
+        val homeserverDomain = fullMatrixId.split(":").drop(1).joinToString(":")
+
+        onIsDiscovering(true)
+        authenticationService.setHomeserver(homeserverDomain)
+            .onSuccess { homeServerDetails ->
+                if (homeServerDetails.supportsOidcLogin) {
+                    // OIDC server — keep spinner going while we get the URL.
+                    val localpart = fullMatrixId.removePrefix("@").split(":")[0]
+                    authenticationService.getOidcUrl(prompt = OidcPrompt.Login, loginHint = localpart)
+                        .onSuccess { oidcDetails ->
+                            // Navigate directly to OIDC — spinner stays until the screen changes.
+                            accountProviderDataSource.setUrl(homeserverDomain)
+                            onOidcDetails(oidcDetails)
+                        }
+                        .onFailure {
+                            onIsDiscovering(false)
+                            Timber.tag(loggerTag.value).e(it, "Failed to get OIDC URL")
+                        }
+                } else if (homeServerDetails.supportsPasswordLogin) {
+                    onIsDiscovering(false)
+                    onShowPasswordField()
+                } else {
+                    onIsDiscovering(false)
+                    Timber.tag(loggerTag.value).w("Server does not support OIDC or password login")
+                }
+            }
+            .onFailure { error ->
+                onIsDiscovering(false)
+                Timber.tag(loggerTag.value).e(error, "Server discovery failed")
+            }
+    }
+
+    private fun CoroutineScope.loginWithPassword(
+        matrixId: String,
+        password: String,
+        loginAction: MutableState<AsyncData<SessionId>>,
+        onIsDiscovering: (Boolean) -> Unit,
+    ) = launch {
+        val fullMatrixId = "@$matrixId"
+        Timber.tag(loggerTag.value).i("Starting login with password from start screen")
+        onIsDiscovering(true)
+        loginAction.value = AsyncData.Loading()
+        authenticationService.login(fullMatrixId, password)
+            .onSuccess { sessionId ->
+                onIsDiscovering(false)
+                loginAction.value = AsyncData.Success(sessionId)
+            }
+            .onFailure { error ->
+                onIsDiscovering(false)
+                loginAction.value = AsyncData.Failure(error)
+                Timber.tag(loggerTag.value).e(error, "Login with password failed")
+            }
     }
 }
